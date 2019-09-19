@@ -5,6 +5,7 @@ import construct as c
 IsoSectorSize = 2048
 
 # DString = c.NullTerminated(c.GreedyString("ascii"), term=b"\x20")
+UtfDString = lambda len: c.FocusedSeq("str", "str"/c.PaddedString(len-1, "ascii"), "val"/c.Int8ul)
 
 Filename = lambda len: c.ExprAdapter(c.PaddedString(len, "ascii"),
     lambda o,c: o[:-2] if o.endswith(";1") else o,
@@ -78,10 +79,7 @@ DirectoryTable = c.GreedyRange(c.FocusedSeq("e",
 )
 
 PrimaryVolumeDescriptor = c.Struct(
-    "type" / c.Const(0x1, c.Int8ul),
-    "std_identifier" / c.Const("CD001", c.PaddedString(5, "ascii")),
-    "std_version" / c.Int8ul,
-    c.Padding(1),
+    c.StopIf(c.this._.type == 0xff),
     "sys_identifier" / c.PaddedString(32, "ascii"),
     "vol_identifier" / c.PaddedString(32, "ascii"),
     c.Padding(8),
@@ -116,11 +114,6 @@ PrimaryVolumeDescriptor = c.Struct(
     c.Padding(1166)
 )
 
-VolumeDescriptorSequence = c.GreedyRange(c.FocusedSeq("e",
-    "e" / VolumeDescriptor,
-    c.StopIf(c.this.e.descriptor_tag.tag_identifier == "terminating_descriptor"))
-)
-
 TagIdentifier = c.Enum(c.Int16ul,
     primary_volume_descriptor = 0x0001,
     anchor_volume_descriptor_pointer = 0x0002,
@@ -145,14 +138,140 @@ TagIdentifier = c.Enum(c.Int16ul,
 )
 
 DescriptorTag = c.Struct(
-    "tag_identifier" / TagIdentifier,
-    "descriptor_version" / c.Int16ul,
+    "identifier" / TagIdentifier,
+    "version" / c.Int16ul,
     "checksum" / c.Int8ul,
-    Padding(1),
+    c.Padding(1),
     "serial_number" / c.Int16ul,
     "descriptor_crc" / c.Int16ul,
     "descriptor_crc_length" / c.Int16ul,
-    "tag_location" / c.Int32ul
+    "sector" / c.Int32ul
+)
+
+DomainIDSuffix = c.Struct(
+    "udf_revision" / c.Int16ul,
+    "domain_flags" / c.Int8ul,
+    c.Padding(5)
+)
+
+ImplementationIDSuffix = c.Struct(
+    "os_class" / c.Int8ul,
+    "os_identifier" / c.Int8ul,
+    c.Padding(6)
+)
+
+UDFIDSuffix = c.Struct(
+    "udf_revision" / c.Int16ul,
+    "os_class" / c.Int8ul,
+    "os_identifier" / c.Int8ul,
+    c.Padding(4)
+)
+
+EntityIDHeader = c.Struct(
+    "flags" / c.Int8ul,
+    "identifier" / c.PaddedString(23, "ascii")
+)
+
+DomainEntityID = c.Struct(
+    c.Embedded(EntityIDHeader),
+    "suffix" / DomainIDSuffix
+)
+
+ImplementationEntityID = c.Struct(
+    c.Embedded(EntityIDHeader),
+    "suffix" / ImplementationIDSuffix
+)
+
+UDFEntityID = c.Struct(
+    c.Embedded(EntityIDHeader),
+    "suffix" / UDFIDSuffix
+)
+
+PartitionMap = c.Struct(
+    "type" / c.Int8ul,
+    "length" / c.Int8ul,
+    "type_id" / c.If(c.this.type == 2,
+        c.FocusedSeq("a", c.Padding(2), "a"/UDFEntityID)),
+    "volume_sequence_number" / c.Int16ul,
+    "partition_number" / c.Int16ul,
+    c.If(c.this.type == 2, c.Padding(24))
+)
+
+LongAllocationDescriptor = c.Struct(
+    "length" / c.Int32ul,
+    "sector" / c.Int32ul,
+    "partition" / c.Int16ul,
+    c.Padding(6)
+)
+
+OSTACharset = c.Struct(
+    "type" / c.Int8ul, #c.Const(0, ),
+    "name" / c.PaddedString(63, "ascii") #c.Const("OSTA Compressed Unicode", )
+)
+
+Timestamp = c.Struct(
+    "type_and_timezone" / c.Int16ul,
+    "year" / c.Int16ul,
+    "month" / c.Int8ul,
+    "day" / c.Int8ul,
+    "hour" / c.Int8ul,
+    "minute" / c.Int8ul,
+    "second" / c.Int8ul,
+    "centisecs" / c.Int8ul,
+    "hundred_us" / c.Int8ul,
+    "us" / c.Int8ul
+)
+
+FileSetDescriptor = c.Struct(
+    "recording_timestamp" / Timestamp,
+    "interchange_level" / c.Int16ul,
+    "max_interchange_level" / c.Int16ul,
+    "charset_list" / c.Int32ul,
+    "max_charset_list" / c.Int32ul,
+    "fileset_number" / c.Int32ul,
+    "fileset_desc_number" / c.Int32ul,
+    "logical_volume_identifier_charset" / OSTACharset,
+    "logical_volume_identifier" / UtfDString(128),
+    "fileset_identifier_charset" / OSTACharset,
+    "fileset_identifier" / UtfDString(32),
+    "copyright_identifier" / UtfDString(32),
+    "abstract_identifier" / UtfDString(32),
+    "root_directory" / LongAllocationDescriptor,
+    "domain_identifier" / DomainEntityID,
+    "next_extent" / LongAllocationDescriptor,
+    "stream_directory" / LongAllocationDescriptor,
+    c.Padding(32)
+)
+
+LogicalVolumeDescriptor = c.Struct(
+    "volume_sequence_number" / c.Int32ul,
+    "character_set" / OSTACharset,
+    "volume_identifier" / UtfDString(128),
+    "logical_block_size" / c.Int32ul,
+    "domain_identifier" / DomainEntityID,
+    "content" / LongAllocationDescriptor, # file set descriptor location
+    "map_table_length" / c.Int32ul,
+    "partition_map_count" / c.Int32ul,
+    "implementation_identifier" / ImplementationEntityID,
+    "implementation_data" / c.Bytes(128),
+    "integrity_sequence_extent" / c.Bytes(8),
+    "partition_maps" / c.Array(c.this.partition_map_count, PartitionMap)
+)
+
+UdfVolumeDescriptor = c.Padded(2048, c.Struct(
+    # "start" / c.Tell,
+    "tag" / DescriptorTag,
+    "desc" / c.Switch(c.this.tag.identifier, {
+        "logical_volume_descriptor": LogicalVolumeDescriptor,
+        "file_set_descriptor": FileSetDescriptor,
+    }, default=c.Pass),
+    # "end" / c.Tell
+))
+
+# UdfVolumeDescriptorSequence = c.Array(5, UdfVolumeDescriptor)
+UdfVolumeDescriptorSequence = c.GreedyRange(c.FocusedSeq("e",
+    "e" / UdfVolumeDescriptor,
+    c.StopIf(lambda ctx: ctx.e.tag.identifier == "terminating_descriptor"))
 )
 
 AnchorVolumeDescriptor = c.Struct(
@@ -160,12 +279,35 @@ AnchorVolumeDescriptor = c.Struct(
     "main_volume_descriptor_length" / c.Int32ul,
     "main_volume_descriptor_sector" / c.Int32ul,
     "backup_volume_descriptor_length" / c.Int32ul,
-    "backup_volume_descriptor_sector" / c.Int32ul
+    "backup_volume_descriptor_sector" / c.Int32ul,
+    c.Seek(c.this.main_volume_descriptor_sector * IsoSectorSize),
+    "seekedto" / c.Tell,
+    "descriptors" / UdfVolumeDescriptorSequence
+)
+
+VolumeDescriptor = c.Struct(
+    "type" / c.Int8ul,
+    "identifier" / c.PaddedString(5, "ascii"),
+    "version" / c.Int8ul,
+    c.Padding(1),
+    "payload" / c.Switch(c.this.identifier, {
+        "CD001": PrimaryVolumeDescriptor,
+        "NSR02": c.Pointer(0x100 * IsoSectorSize, AnchorVolumeDescriptor),
+        "NSR03": c.Pointer(0x100 * IsoSectorSize, AnchorVolumeDescriptor),
+        "BEA01": c.Pass,
+        "BOOT2": c.Pass,
+        "TEA01": c.Pass
+    })
+)
+
+VolumeDescriptorSequence = c.GreedyRange(c.FocusedSeq("vd",
+   "vd" / c.Padded(IsoSectorSize, VolumeDescriptor),
+   c.StopIf(lambda ctx: ctx.vd.identifier == "TEA01"))
 )
 
 IsoFile = c.Struct(
-    "pvd" / c.Pointer(0x10*IsoSectorSize, PrimaryVolumeDescriptor),
-    "path_table" / c.Pointer(c.this.pvd.lpath_table_sector*IsoSectorSize,
-        c.FixedSized(c.this.pvd.path_table_size, PathTable)),
-    "directory_table" / c.Pointer(c.this.pvd.root.data_sector * IsoSectorSize, DirectoryTable),
+    "vds" / c.Pointer(0x10 * IsoSectorSize, VolumeDescriptorSequence),
+    # "path_table" / c.Pointer(c.this.vds[0].payload.lpath_table_sector * IsoSectorSize,
+    #    c.FixedSized(c.this.vds[0].payload.path_table_size, PathTable)),
+    #"directory_table" / c.Pointer(c.this.pvd.root.data_sector * IsoSectorSize, DirectoryTable),
 )
