@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import sys
 import construct as c
 
 IsoSectorSize = 2048
@@ -229,8 +230,8 @@ LongAD = c.Struct(
 )
 
 OSTACharset = c.Struct(
-    "type" / c.Int8ul, #c.Const(0, ),
-    "name" / c.PaddedString(63, "ascii") #c.Const("OSTA Compressed Unicode", )
+    "type" / c.Const(0, c.Int8ul),
+    "name" / c.Const("OSTA Compressed Unicode", c.PaddedString(63, "ascii"))
 )
 
 Timestamp = c.Struct(
@@ -265,14 +266,12 @@ FileSetDescriptor = c.Struct(
     "next_extent" / LongAD,
     "stream_directory" / LongAD,
     c.Padding(32),
-    # "root_directory" / c.LazyBound(lambda: PartitionDirectory(
-    #     c.this._._._.partition_start, c.this._.root_directory_ad.sector))
 )
 
 LogicalVolumeDescriptor = c.Struct(
     "volume_sequence_number" / c.Int32ul,
     "character_set" / OSTACharset,
-    "volume_identifier" / UtfDString(128), # TODO: should be OSTACompressedUnicode?
+    "volume_identifier" / UtfDString(128), # contains compression byte, should be OSTACompressedUnicode?
     "logical_block_size" / c.Const(IsoSectorSize, c.Int32ul),
     "domain_identifier" / DomainEntityID,
     "content" / LongAD, # file set descriptor sequnce location
@@ -294,6 +293,7 @@ FileCharacteristics = c.BitStruct(
 )
 
 FileIdentifierDescriptor = c.Aligned(4, c.Struct(
+    "start" / c.Tell,
     "version" / c.Int16ul,
     "characteristics" / FileCharacteristics,
     "identifier_length" / c.Int8ul,
@@ -302,10 +302,6 @@ FileIdentifierDescriptor = c.Aligned(4, c.Struct(
     "implementation_use" / c.Bytes(c.this.implementation_use_length),
     "identifier" / c.If(c.this.identifier_length > 0,
         OSTACompressedUnicode(c.this._.identifier_length)),
-    # c.StopIf(lambda ctx: ctx.identifier != "PS3_UPDATE"),
-    # "entries" / c.If(c.this.characteristics.directory == True,
-    #     c.LazyBound(lambda: PartitionDirectory(c.this._._._._._._.partition_start,
-    #         c.this._.icb.sector)))
 ))
 
 ICBTag = c.Struct(
@@ -320,6 +316,7 @@ ICBTag = c.Struct(
 )
 
 FileEntry = c.Struct(
+    "start" / c.Tell,
     "icb" / ICBTag,
     "uid" / c.Int32ul,
     "gid" / c.Int32ul,
@@ -340,19 +337,7 @@ FileEntry = c.Struct(
     "extended_attrs_length" / c.Int32ul,
     "allocation_descriptors_length" / c.Int32ul,
     "extended_attrs" / c.Bytes(c.this.extended_attrs_length),
-    "allocation_descriptors" / c.Array(c.this.allocation_descriptors_length//8,
-        ShortAD
-        # c.Struct(
-        #     "ad" / ShortAD,
-        #     "files" / c.Pointer(
-        #         c.this._._._.partition_start + c.this.ad.sector * IsoSectorSize,
-        #         c.LazyBound(lambda: UdfDescriptorSequence)
-        #         # c.FixedSized(c.this.ad.length, c.LazyBound(lambda: c.Array(4, UdfDescriptor)))
-        #         # c.FixedSized(c.this.ad.length, c.LazyBound(lambda: c.GreedyRange(UdfDescriptor)))
-        #         # todo: replace greedyrange with fixed range
-        #     )
-        # )
-    ),
+    "allocation_descriptors" / c.Array(c.this.allocation_descriptors_length//8, ShortAD),
 )
 
 AllocationExtentDescriptor = c.Struct(
@@ -393,8 +378,6 @@ PartitionHeader = c.Struct(
 UdfDescriptor = c.Struct(
     "start" / c.Tell,
     "tag" / DescriptorTag,
-    # c.StopIf(lambda ctx: ctx.tag.identifier == "terminating_descriptor" or ctx.tag.identifier == 0),
-    # "tag" / c.ExprValidator(DescriptorTag, lambda o,ctx: o.identifier != 0 and o.identifier != "terminating_descriptor"), # abort parsing on terminator or zero identifier
     "desc" / c.Switch(c.this.tag.identifier, {
         "logical_volume_descriptor": LogicalVolumeDescriptor,
         "file_set_descriptor": FileSetDescriptor,
@@ -403,50 +386,25 @@ UdfDescriptor = c.Struct(
         "allocation_extent_descriptor": AllocationExtentDescriptor,
         "file_identifier_descriptor": FileIdentifierDescriptor,
     }, default=c.Pass),
-    # "end" / c.Tell
 )
 
-# UdfDescriptorSequence = c.GreedyRange(UdfDescriptor)
-UdfDescriptorSequence = c.RepeatUntil(
-    lambda x,lst,ctx: x.tag.identifier == "terminating_descriptor" or x.tag.identifier == 0,
-    UdfDescriptor
-)
-# UdfDescriptorSequence = c.GreedyRange(c.FocusedSeq("e",
-#     "e" / UdfDescriptor,
-#     c.StopIf(lambda ctx: ctx.e.tag.identifier == "terminating_descriptor"))
-# )
+UdfDescriptorSequence = c.GreedyRange(UdfDescriptor)
 
 PaddedUdfDescriptor = c.Padded(2048, UdfDescriptor)
 
-# PaddedUdfDescriptorSequence = c.GreedyRange(c.FocusedSeq("e",
-#     "e" / PaddedUdfDescriptor,
-#     c.StopIf(lambda ctx: ctx.e.tag.identifier == "terminating_descriptor" or ctx.e.tag.identifier == 0))
-# )
-# PaddedUdfDescriptorSequence = c.Array(5, PaddedUdfDescriptor)
 PaddedUdfDescriptorSequence = c.RepeatUntil(
     lambda x,lst,ctx: x.tag.identifier == "terminating_descriptor" or x.tag.identifier == 0,
     PaddedUdfDescriptor
 )
 
-PartitionDirectory = lambda partition_start, sector_offset: c.FocusedSeq("file_entries",
-    # c.Seek(partition_start + sector_offset * IsoSectorSize),
-    c.Seek((partition_start + sector_offset) * IsoSectorSize),
-    # "partition_start" / c.Computed(partition_start),
-    # "loc" / c.Tell,
-    # "file_entry" / PaddedUdfDescriptor,
-    # "file_entry" / c.UdfDescriptor,
-    "file_entries" / UdfDescriptorSequence
+UdfDescriptorSequenceAtSector = lambda sector, length: c.FocusedSeq("descs",
+    c.Seek(sector * IsoSectorSize),
+    "descs" / c.FixedSized(length, UdfDescriptorSequence)
 )
 
-Partition = c.Struct(
-    c.Padding(32 * IsoSectorSize), # quirk to skip first strange file entry descriptor
-    "partition_start" / c.Tell,
-    "fileset" / UdfDescriptor,
-)
-
-PartitionStart = lambda start_sector, fileset_sector: c.FocusedSeq("file_set",
-    c.Seek((start_sector + fileset_sector) * IsoSectorSize),
-    "file_set" / UdfDescriptor,
+UdfDescriptorAtSector = lambda sector: c.FocusedSeq("desc",
+    c.Seek(sector * IsoSectorSize),
+    "desc" / UdfDescriptor,
 )
 
 AnchorVolumeDescriptor = c.Struct(
@@ -457,7 +415,6 @@ AnchorVolumeDescriptor = c.Struct(
     "backup_volume_descriptor_sector" / c.Int32ul,
     c.Seek(c.this.main_volume_descriptor_sector * IsoSectorSize),
     "descriptors" / PaddedUdfDescriptorSequence,
-    #"partition" / c.Pointer(c.this.descriptors[2].desc.partition_start * IsoSectorSize, FileEntry),
 )
 
 VolumeDescriptor = c.Struct(
@@ -475,10 +432,6 @@ VolumeDescriptor = c.Struct(
     })
 )
 
-# VolumeDescriptorSequence = c.GreedyRange(c.FocusedSeq("vd",
-#    "vd" / c.Padded(IsoSectorSize, VolumeDescriptor),
-#    c.StopIf(lambda ctx: ctx.vd.identifier == "TEA01"))
-# )
 VolumeDescriptorSequence = c.RepeatUntil(
     lambda x,lst,ctx: x.identifier == "TEA01",
     c.Padded(IsoSectorSize, VolumeDescriptor)
@@ -486,67 +439,58 @@ VolumeDescriptorSequence = c.RepeatUntil(
 
 IsoVolumeDescriptors = c.Pointer(0x10 * IsoSectorSize, VolumeDescriptorSequence)
 
-IsoFile = c.Struct(
-    "vds" / c.Pointer(0x10 * IsoSectorSize, VolumeDescriptorSequence),
-    # "path_table" / c.Pointer(c.this.vds[0].payload.lpath_table_sector * IsoSectorSize,
-    #    c.FixedSized(c.this.vds[0].payload.path_table_size, PathTable)),
-    #"directory_table" / c.Pointer(c.this.pvd.root.data_sector * IsoSectorSize, DirectoryTable),
-    # "partition" / c.Pointer(c.this.vds[4].payload.descriptors[2].desc.partition_start * IsoSectorSize, FileEntry),
-    #"partition" / c.Pointer(c.this.vds[4].payload.descriptors[2].desc.partition_start * IsoSectorSize, PartitionHeader),
-    "partition" / c.Pointer(c.this.vds[4].payload.descriptors[2].desc.partition_start * IsoSectorSize, Partition),
-    #"fileset" / c.Pointer(480 * IsoSectorSize, PaddedUdfDescriptor),
-)
+def GetUdfFileSize(fd, partition_start, entry_sector):
+    info = UdfDescriptorAtSector(partition_start + entry_sector).parse_stream(fd)
+    # print("data entry: "+str(info))
+    size = 0
+    sectors = 0
+    for ad in info.desc.allocation_descriptors:
+        size += ad.length
+        sectors += 1
+    return {"size": size, "sectors": sectors,
+        "start_sector": partition_start + info.desc.allocation_descriptors[0].sector}
 
-def ParseUdfDirectory(fd, partition_start, entry_sector):
-    entry = PartitionStart(partition_start, entry_sector).parse_stream(fd)
-    if len(entry.desc.allocation_descriptors) != 0:
-        print(f"Number of allocation descriptors unsupported: {entry.desc.allocation_descriptors}")
-    dir_sector = entry.desc.allocation_descriptors[0].sector
+def ParseUdfDirectory(fd, partition_start, entry_sector, verbose):
+    entry = UdfDescriptorAtSector(partition_start + entry_sector).parse_stream(fd)
+    if len(entry.desc.allocation_descriptors) != 1:
+        print(f"Number of allocation descriptors unsupported: {len(entry.desc.allocation_descriptors)}")
+    ad = entry.desc.allocation_descriptors[0]
     dirtree = []
-    dir = PartitionDirectory(partition_start, dir_sector).parse_stream(fd)
+    dir = UdfDescriptorSequenceAtSector(partition_start + ad.sector, ad.length).parse_stream(fd)
     for entry in dir:
-        print(f"parse dir entry {entry}")
-        if (entry.tag.identifier == 0): # abort on last empty file identifier descriptor
-            break
         if entry.desc.characteristics.parent == True: # skip parent link entries
             continue
-        elem = {
-            "name": entry.desc.identifier,
-            "size": entry.desc.icb.length
-        }
+        elem = {"name": entry.desc.identifier}
+        elem.update(GetUdfFileSize(fd, partition_start, entry.desc.icb.sector))
         if entry.desc.characteristics.directory == True:
-            print(f"entering directory {entry.desc.identifier}")
-            elem["content"] = ParseUdfDirectory(fd, partition_start, entry.desc.icb.sector)
+            if verbose:
+                print(f"entering directory {entry.desc.identifier}")
+            elem["content"] = ParseUdfDirectory(fd, partition_start, entry.desc.icb.sector, verbose)
+        elif verbose:
+            print(f"parsed file entry {entry.desc.identifier}")
+        # else:
+        #     print("file entry: "+str(entry))
         dirtree += [elem]
+    return dirtree
 
-    print(dir)
-
-def ParseUdfPartition(fd, partition_start, fileset_sector):
+def ParseUdfPartition(fd, partition_start, fileset_sector, verbose):
     partition_start += 32 # quirk to skip strange file entry descriptors
-    fileset = PartitionStart(partition_start, fileset_sector).parse_stream(fd)
-    # print(fileset)
-    # root = PartitionDirectory(partition_start,
-    #   fileset.desc.root_directory_ad.sector).parse_stream(fd)
-    # if (len(root) > 1):
-    #     print("Warning: more than one file entry in root directory")
-    # # print(root)
-    # dirtree = []
-    # for ad in root[0].desc.allocation_descriptors:
-    #     dirtree += ParseUdfDirectory(fd, partition_start, ad.sector)
-    # return dirtree
-    return ParseUdfDirectory(fd, partition_start, fileset.desc.root_directory_ad.sector)
+    fileset = UdfDescriptorAtSector(partition_start + fileset_sector).parse_stream(fd)
+    return ParseUdfDirectory(fd, partition_start, fileset.desc.root_directory_ad.sector, verbose)
 
-def ParseUdf(fd, anchor_desc):
+def ParseUdf(fd, anchor_desc, verbose):
     fileset_sector = None
     partition_start = None
     for desc in anchor_desc.descriptors:
         if (desc.tag.identifier == "partition_descriptor"):
-            print(f"UDF partition at sector {desc.desc.partition_start}")
+            if verbose:
+                print(f"UDF partition at sector {desc.desc.partition_start}")
             if (partition_start is not None):
                 raise Exception("More than one partition descriptor")
             partition_start = desc.desc.partition_start
         if (desc.tag.identifier == "logical_volume_descriptor"):
-            print(f"Fileset at sector {desc.desc.content.sector}")
+            if verbose:
+                print(f"Fileset at sector {desc.desc.content.sector}")
             if (fileset_sector is not None):
                 raise Exception("More than one logical volume descriptor")
             fileset_sector = desc.desc.content.sector
@@ -554,16 +498,32 @@ def ParseUdf(fd, anchor_desc):
         raise Exception("No partition descriptor")
     if (fileset_sector is None):
         raise Exception("No logical volume descriptor")
-    return ParseUdfPartition(fd, partition_start, fileset_sector)
+    return ParseUdfPartition(fd, partition_start, fileset_sector, verbose)
 
-def ParseIso(fd, parse_iso=True, parse_udf=True):
+def ParseIso(fd, parse_iso=True, parse_udf=True, verbose=False):
     files = {}
     vds = IsoVolumeDescriptors.parse_stream(fd)
     for vd in vds:
         if parse_iso and vd.type == 1 and vd.identifier == "CD001":
-            print("File has an ISO9660 descriptor")
+            if verbose:
+                print("File has an ISO9660 descriptor")
+            # TODO: parse to simple dict
+            files['iso'] = c.Pointer(vd.root.data_sector * IsoSectorSize,
+                DirectoryTable).parse_stream(fd)
         if parse_udf and vd.type == 0 and vd.identifier in ["NSR02", "NSR03"]:
-            print(f"File has an {vd.identifier} UDF descriptor")
-            files["udf"] = ParseUdf(fd, vd.payload)
-            # ParseUdfPartition(fd, vd.payload.)
+            if verbose:
+                print(f"File has an {vd.identifier} UDF descriptor")
+            files["udf"] = ParseUdf(fd, vd.payload, verbose)
     return files
+
+if __name__ == "__main__":
+    fd = open(sys.argv[1], "rb")
+    files = ParseIso(fd, parse_iso=False, verbose=True)
+
+    def print_dir(dir, prefix="/"):
+      for e in dir:
+        print(prefix+e['name']+("" if 'content' in e else f" [{e['size']} B]"))
+        if 'content' in e:
+          print_dir(e['content'], f"{prefix}{e['name']}/")
+
+    print_dir(files['udf'])
