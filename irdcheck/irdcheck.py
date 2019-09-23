@@ -6,6 +6,8 @@ import os
 import io
 from construct.core import ConstError
 import argparse
+import hashlib
+from functools import partial
 
 import ird
 import iso
@@ -14,7 +16,7 @@ class FileTree:
     def __init__(self):
         self.files = []
 
-    def _print_files(self, files, prefix, attrs, print_dirs):
+    def _print_files(self, files, prefix, attrs, print_dirs, separator):
         for e in files:
             tmp = []
             for attr, length in attrs.items():
@@ -23,9 +25,10 @@ class FileTree:
                 else:
                     tmp += [f"{e[attr]:{length}}"]
             if print_dirs or 'content' not in e:
-                print(" | ".join(tmp))
+                print(separator.join(tmp))
             if 'content' in e:
-                self._print_files(e['content'], f"{prefix}{e['name']}/", attrs, print_dirs)
+                self._print_files(e['content'], f"{prefix}{e['name']}/",
+                    attrs, print_dirs, separator)
 
     def _get_max_print_widths(self, files, attrs, prefix=""):
         for e in files:
@@ -33,25 +36,26 @@ class FileTree:
                 sub = self._get_max_print_widths(e['content'],
                         attrs, f"{prefix}{e['name']}/")
                 for attr, value in attrs.items():
-                    attrs[attr] = max(value, sub[attr]) 
+                    attrs[attr] = max(value, sub[attr])
             else:
                 for attr, value in attrs.items():
                     if attr == 'name':
                         n = len(f"{prefix}{e['name']}")
                     else:
                         n = len(str(e[attr]))
-                    attrs[attr] = max(value, n) 
+                    attrs[attr] = max(value, n)
         return attrs
 
-    def print_files(self, attrs, print_dirs=False):
+    def print_files(self, attrs, print_dirs=False, separator=' | ', print_header=True):
         prefix = ''
         attrs_lens = self._get_max_print_widths(self.files,
                 {x:0 for x in attrs}, prefix)
-        header = []
-        for attr, length in attrs_lens.items():
-            header += [f"{attr.capitalize():{length}}"]
-        print(" | ".join(header))
-        self._print_files(self.files, prefix, attrs_lens, print_dirs)
+        if print_header:
+            header = []
+            for attr, length in attrs_lens.items():
+                header += [f"{attr.capitalize():{length}}"]
+            print(separator.join(header))
+        self._print_files(self.files, prefix, attrs_lens, print_dirs, separator)
 
 class IrdFile(FileTree):
     def __init__(self, filename):
@@ -96,14 +100,6 @@ class IrdFile(FileTree):
         parsed = iso.ParseIso(hdr, parse_iso=False)
         self.files = parsed['udf']
 
-
-    def verify_dir(self, dir_files, ird_files):
-        pass
-
-    def check(self, game_dir):
-        dir_files = self.build_file_list(game_dir)
-        print(dir_files)
-
     def map_md5sums(self, dir):
         for file in dir:
             file['hash'] = ''
@@ -127,6 +123,9 @@ class IrdFile(FileTree):
     def print_files(self):
         super().print_files(['name', 'size', 'sector', 'hash'])
 
+    def print_md5sum(self):
+        super().print_files(['hash', 'name'], separator='  ', print_header=False)
+
     def print_header(self):
         print(f"{self.id()} - {self.name()}")
 
@@ -135,6 +134,12 @@ class GameDir(FileTree):
         super().__init__()
         self.dir = game_dir
         self.build_file_list()
+
+        self.files_ok = 0
+        self.files_disk_only = 0
+        self.files_ird_only = 0
+        self.files_size_mismatch = 0
+        self.files_hash_mismatch = 0
 
     def get_file_by_path(self, path):
         content = self.files
@@ -157,7 +162,7 @@ class GameDir(FileTree):
             for d in dirs:
                 tmp = {'name': d, 'size': '', 'content': []}
                 content += [tmp]
-                
+
             for f in files:
                 tmp = {'name': f,
                     'size': os.stat(os.path.join(root, f)).st_size}
@@ -165,6 +170,67 @@ class GameDir(FileTree):
 
     def print_files(self):
         super().print_files(['name', 'size'])
+
+    def md5sum(self, filename):
+        with open(filename, mode='rb') as f:
+            d = hashlib.md5()
+            for buf in iter(partial(f.read, 4096), b''):
+                d.update(buf)
+        return d.hexdigest()
+
+    def _check(self, path, files, ird_files):
+        # first, add all disk files and set on_disk attribute
+        merged = files
+        for file in merged:
+            file['on_disk'] = True
+            if 'content' not in file:
+                file['content'] = []
+
+        # now, check every ird file and either merge or add to merged
+        for irdfile in ird_files:
+            elem = next((x for x in merged if x['name'] == irdfile.name), None)
+            if elem is None: # not in merged yet
+                irdfile['in_ird'] = True
+                irdfile['ird_size'] = irdfile['size']
+                irdfile['ird_hash'] = irdfile['hash']
+                irdfile['ird_content'] = irdfile['content'] if 'content' in irdfile else []
+                del irdfile['size']
+                del irdfile['hash']
+                del irdfile['content']
+                merged += [irdfile]
+            else: # already known -> compare
+                elem['in_ird'] = True
+                elem['ird_size'] = irdfile['size']
+                elem['ird_hash'] = irdfile['hash']
+                elem['ird_content'] = irdfile['content'] if 'content' in irdfile else []
+
+        # check every file
+        for file in merged:
+            filepath = os.path.join(path, file['name'])
+            if file['on_disk'] and not file['in_ird']:
+                print(f"{filepath} not in IRD")
+                self.files_disk_only += 1
+            elif not file['on_disk'] and file['in_ird']:
+                print(f"{filepath} not on disk")
+                self.files_ird_only += 1
+            elif 'content' in file:
+                self._check(f"{filepath}/", file['content'], file['ird_content'])
+            else: # check file size + hash
+                if file['size'] != file['ird_size']:
+                    print(f"Size mismatch in {filepath}: {file['size']} on disk, {file['ird_size']} in IRD")
+                    self.files_size_mismatch += 1
+                else:
+                    print("DEBUG: hashing file "+filepath)
+                    file['hash'] = self.md5sum(filepath)
+                    if file['hash'] != file['hash']:
+                        print(f"Hash mismatch in {filepath}: {file['hash']} on disk, {file['ird_hash']} in IRD")
+                        self.files_hash_mismatch += 1
+                    else:
+                        print("File ok: "+filepath)
+                        self.files_ok += 1
+
+    def check(self, ird):
+        self._check(self.dir, self.files, ird.files)
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Read IRD files and test files for conformance')
@@ -201,10 +267,6 @@ if __name__ == "__main__":
     args = parse_args()
 
     ird = IrdFile(args.ird_file)
-    #ird.print_files()
-    game = GameDir(args.game_dir)
-    #game.print_files()
-    #sys.exit(0)
 
     if args.action == 'print':
         ird.print_header()
@@ -213,4 +275,5 @@ if __name__ == "__main__":
         ird.print_md5sum()
     elif args.action == 'check':
         ird.print_header()
-        ird.check()
+        game = GameDir(args.game_dir)
+        game.check(ird)
