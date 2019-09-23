@@ -127,10 +127,14 @@ class IrdFile(FileTree):
     def print_files(self):
         super().print_files(['name', 'size', 'sector', 'hash'])
 
+    def print_header(self):
+        print(f"{self.id()} - {self.name()}")
+
 class GameDir(FileTree):
     def __init__(self, game_dir):
         super().__init__()
         self.dir = game_dir
+        self.build_file_list()
 
     def get_file_by_path(self, path):
         content = self.files
@@ -197,15 +201,16 @@ if __name__ == "__main__":
     args = parse_args()
 
     ird = IrdFile(args.ird_file)
-    ird.print_files()
+    #ird.print_files()
     game = GameDir(args.game_dir)
-    game.build_file_list()
     #game.print_files()
-    sys.exit(0)
+    #sys.exit(0)
 
     if args.action == 'print':
+        ird.print_header()
         ird.print_files()
     elif args.action == 'md5sum':
         ird.print_md5sum()
     elif args.action == 'check':
-        ird.check(args.game_dir)
+        ird.print_header()
+        ird.check()
