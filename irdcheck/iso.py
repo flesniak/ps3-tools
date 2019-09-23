@@ -441,14 +441,14 @@ IsoVolumeDescriptors = c.Pointer(0x10 * IsoSectorSize, VolumeDescriptorSequence)
 
 def GetUdfFileSize(fd, partition_start, entry_sector):
     info = UdfDescriptorAtSector(partition_start + entry_sector).parse_stream(fd)
-    # print("data entry: "+str(info))
     size = 0
     sectors = 0
     for ad in info.desc.allocation_descriptors:
         size += ad.length
-        sectors += 1
+        if ad.length > 0:
+            sectors += 1
     return {"size": size, "sectors": sectors,
-        "start_sector": partition_start + info.desc.allocation_descriptors[0].sector}
+        "sector": partition_start + info.desc.allocation_descriptors[0].sector - 32}
 
 def ParseUdfDirectory(fd, partition_start, entry_sector, verbose):
     entry = UdfDescriptorAtSector(partition_start + entry_sector).parse_stream(fd)
@@ -468,8 +468,6 @@ def ParseUdfDirectory(fd, partition_start, entry_sector, verbose):
             elem["content"] = ParseUdfDirectory(fd, partition_start, entry.desc.icb.sector, verbose)
         elif verbose:
             print(f"parsed file entry {entry.desc.identifier}")
-        # else:
-        #     print("file entry: "+str(entry))
         dirtree += [elem]
     return dirtree
 

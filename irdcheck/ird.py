@@ -7,7 +7,7 @@ IrdMagic = Const("3IRD", PaddedString(4, encoding="ascii"))
 Md5Sum = Bytes(16)
 
 IrdFile = Struct(
-    "key" / Int64ul,
+    "sector" / Int64ul,
     "hash" / Md5Sum
 )
 
