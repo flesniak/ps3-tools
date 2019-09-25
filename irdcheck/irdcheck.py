@@ -218,7 +218,7 @@ class GameDir(FileTree):
                 else:
                     irdfile['ird_content'] = []
                     self.files_ird += 1
-                merged += [elem]
+                merged += [irdfile]
             else: # already known -> compare
                 elem['in_ird'] = True
                 elem['ird_size'] = irdfile['size']
