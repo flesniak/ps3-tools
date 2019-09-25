@@ -460,14 +460,16 @@ def ParseUdfDirectory(fd, partition_start, entry_sector, verbose):
     for entry in dir:
         if entry.desc.characteristics.parent == True: # skip parent link entries
             continue
-        elem = {"name": entry.desc.identifier}
+        elem = {"name": entry.desc.identifier, "is_dir": entry.desc.characteristics.directory}
         elem.update(GetUdfFileSize(fd, partition_start, entry.desc.icb.sector))
         if entry.desc.characteristics.directory == True:
             if verbose:
                 print(f"entering directory {entry.desc.identifier}")
             elem["content"] = ParseUdfDirectory(fd, partition_start, entry.desc.icb.sector, verbose)
-        elif verbose:
-            print(f"parsed file entry {entry.desc.identifier}")
+        else:
+            elem["content"] = []
+            if verbose:
+                print(f"parsed file entry {entry.desc.identifier}")
         dirtree += [elem]
     return dirtree
 
@@ -520,7 +522,7 @@ if __name__ == "__main__":
 
     def print_dir(dir, prefix="/"):
       for e in dir:
-        print(prefix+e['name']+("" if 'content' in e else f" [{e['size']} B]"))
+        print(prefix+e['name']+("" if e['is_dir'] else f" [{e['size']} B]"))
         if 'content' in e:
           print_dir(e['content'], f"{prefix}{e['name']}/")
 

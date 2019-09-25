@@ -24,15 +24,15 @@ class FileTree:
                     tmp += [f"{prefix+e[attr]:{length}}"]
                 else:
                     tmp += [f"{e[attr]:{length}}"]
-            if print_dirs or 'content' not in e:
+            if print_dirs or e['is_dir']:
                 print(separator.join(tmp))
-            if 'content' in e:
+            if e['is_dir']:
                 self._print_files(e['content'], f"{prefix}{e['name']}/",
                     attrs, print_dirs, separator)
 
     def _get_max_print_widths(self, files, attrs, prefix=""):
         for e in files:
-            if 'content' in e:
+            if e['is_dir']:
                 sub = self._get_max_print_widths(e['content'],
                         attrs, f"{prefix}{e['name']}/")
                 for attr, value in attrs.items():
@@ -103,7 +103,7 @@ class IrdFile(FileTree):
     def map_md5sums(self, dir):
         for file in dir:
             file['hash'] = ''
-            if 'content' in file: # recurse directories
+            if file['is_dir']:
                 self.map_md5sums(file['content'])
             else:
                 for ird_file in self.content.files:
@@ -169,13 +169,15 @@ class GameDir(FileTree):
                 print("bug: {} not found".format(current_dir))
                 break
 
+            tmp = {'name': d, 'content': []}
             for d in dirs:
-                tmp = {'name': d, 'size': '', 'content': []}
+                tmp['is_dir'] = True
+                tmp['size'] = -1
                 content += [tmp]
 
             for f in files:
-                tmp = {'name': f,
-                    'size': os.stat(os.path.join(root, f)).st_size}
+                tmp['is_dir'] = False
+                tmp['size'] = os.stat(os.path.join(root, f)).st_size
                 content += [tmp]
 
     def print_files(self):
@@ -195,40 +197,37 @@ class GameDir(FileTree):
             file['in_ird'] = False
             file['on_disk'] = True
             file['ird_content'] = []
-            if 'content' not in file:
-                file['content'] = []
-                self.files_disk += 1
-            else:
+            file['ird_hash'] = ''
+            file['ird_size'] = -1
+            if file['is_dir']:
                 self.dirs_disk += 1
+            else:
+                self.files_disk += 1
 
         # now, check every ird file and either merge or add to merged
         for irdfile in ird_files:
+            if irdfile['is_dir']:
+                self.dirs_ird += 1
+            else:
+                self.files_ird += 1
             elem = next((x for x in merged if x['name'] == irdfile['name']), None)
             if elem is None: # not in merged yet
                 irdfile['in_ird'] = True
                 irdfile['on_disk'] = False
                 irdfile['ird_size'] = irdfile['size']
                 irdfile['ird_hash'] = irdfile['hash']
-                del irdfile['size']
-                del irdfile['hash']
-                if 'content' in irdfile:
-                    irdfile['ird_content'] = irdfile['content']
-                    del irdfile['content']
-                    self.dirs_ird += 1
-                else:
-                    irdfile['ird_content'] = []
-                    self.files_ird += 1
+                irdfile['size'] = -1
+                irdfile['hash'] = ''
+                irdfile['ird_is_dir'] = irdfile['is_dir']
+                irdfile['ird_content'] = irdfile['content']
+                irdfile['content'] = []
                 merged += [irdfile]
             else: # already known -> compare
                 elem['in_ird'] = True
+                elem['ird_is_dir'] = irdfile['is_dir']
                 elem['ird_size'] = irdfile['size']
                 elem['ird_hash'] = irdfile['hash']
-                if 'content' in irdfile:
-                    elem['ird_content'] = irdfile['content']
-                    self.dirs_ird += 1
-                else:
-                    elem['ird_content'] = []
-                    self.files_ird += 1
+                elem['ird_content'] = irdfile['content']
 
         # check every file
         for file in merged:
@@ -240,15 +239,15 @@ class GameDir(FileTree):
                 else:
                     self.files_disk_only += 1
             elif not file['on_disk'] and file['in_ird']:
-                print(f"{filepath} not on disk")
+                print(f"{filepath} not on disk, should be {file['ird_size']} Bytes, MD5 {file['ird_hash']}")
                 if 'content' in file:
                     self.dirs_ird_only += 1
                 else:
                     self.files_ird_only += 1
-            elif len(file['content']) == 0 != len(file['ird_content']) == 0:
+            elif file['is_dir'] != file['ird_is_dir']:
                 print(f"{filepath} is file and should be dir or vice versa")
                 self.dir_file_mismatch += 1
-            elif len(file['content']) == 0: # check file size + hash
+            elif not file['is_dir']: # check file size + hash
                 if file['size'] != file['ird_size']:
                     print(f"Size mismatch in {filepath}: {file['size']} on disk, {file['ird_size']} in IRD")
                     self.files_size_mismatch += 1
@@ -262,7 +261,7 @@ class GameDir(FileTree):
                         self.files_ok += 1
             else:
                 self.dirs_ok += 1
-            if len(file['content']) > 0:
+            if file['is_dir'] or file['ird_is_dir']:
                 self._check(f"{filepath}/", file['content'], file['ird_content'])
 
     def check(self, ird):
@@ -322,6 +321,7 @@ def parse_args():
 if __name__ == "__main__":
     args = parse_args()
 
+    print(f"Parsing {args.ird_file}...", file=sys.stderr)
     ird = IrdFile(args.ird_file)
 
     if args.action == 'print':
@@ -331,5 +331,6 @@ if __name__ == "__main__":
         ird.print_md5sum()
     elif args.action == 'check':
         ird.print_header()
+        print(f"Crawling {args.game_dir}...", file=sys.stderr)
         game = GameDir(args.game_dir)
         game.check(ird)
