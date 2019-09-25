@@ -169,15 +169,22 @@ class GameDir(FileTree):
                 print("bug: {} not found".format(current_dir))
                 break
 
-            tmp = {'name': d, 'content': []}
             for d in dirs:
-                tmp['is_dir'] = True
-                tmp['size'] = -1
+                tmp = {
+                    'name': d,
+                    'content': [],
+                    'is_dir': True,
+                    'size': -1
+                }
                 content += [tmp]
 
             for f in files:
-                tmp['is_dir'] = False
-                tmp['size'] = os.stat(os.path.join(root, f)).st_size
+                tmp = {
+                    'name': f,
+                    'content': [],
+                    'is_dir': False,
+                    'size': os.stat(os.path.join(root, f)).st_size
+                }
                 content += [tmp]
 
     def print_files(self):
@@ -239,7 +246,9 @@ class GameDir(FileTree):
                 else:
                     self.files_disk_only += 1
             elif not file['on_disk'] and file['in_ird']:
-                print(f"{filepath} not on disk, should be {file['ird_size']} Bytes, MD5 {file['ird_hash']}")
+                print(f"{filepath} not on disk", sep=""
+                    "" if file['ird_is_dir'] else
+                    f", should be {file['ird_size']} Bytes, MD5 {file['ird_hash']}")
                 if 'content' in file:
                     self.dirs_ird_only += 1
                 else:
@@ -282,7 +291,10 @@ class GameDir(FileTree):
         print(f"Files with size mismatch: {self.files_size_mismatch}")
         print(f"Files with hash mismatch: {self.files_hash_mismatch}")
 
-        if self.files_disk != self.files_ird or self.files_disk_only+self.files_ird_only+self.files_size_mismatch+self.files_hash_mismatch > 0:
+        if self.files_disk != self.files_ird or \
+            self.files_disk_only+self.files_ird_only+self.files_size_mismatch+self.files_hash_mismatch > 0 or \
+            self.dirs_disk != self.dirs_ird or \
+            self.dirs_disk_only+self.dir_file_mismatch+self.dirs_ird_only > 0:
             print("GAME DATA INVALID")
         else:
             print("GAME DATA VALID")
