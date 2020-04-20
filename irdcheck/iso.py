@@ -184,22 +184,22 @@ EntityIDHeader = c.Struct(
 )
 
 DomainEntityID = c.Struct(
-    c.Embedded(EntityIDHeader),
+    "hdr" / EntityIDHeader,
     "suffix" / DomainIDSuffix
 )
 
 ImplementationEntityID = c.Struct(
-    c.Embedded(EntityIDHeader),
+    "hdr" / EntityIDHeader,
     "suffix" / ImplementationIDSuffix
 )
 
 UDFEntityID = c.Struct(
-    c.Embedded(EntityIDHeader),
+    "hdr" / EntityIDHeader,
     "suffix" / UDFIDSuffix
 )
 
 ApplicationEntityID = c.Struct(
-    c.Embedded(EntityIDHeader),
+    "hdr" / EntityIDHeader,
     "suffix" / ApplicationIDSuffix
 )
 
@@ -225,7 +225,7 @@ LBAddr = c.Struct(
 
 LongAD = c.Struct(
     "length" / c.Int32ul,
-    c.Embedded(LBAddr),
+    "lba" / LBAddr,
     c.Padding(6)
 )
 
@@ -461,11 +461,11 @@ def ParseUdfDirectory(fd, partition_start, entry_sector, verbose):
         if entry.desc.characteristics.parent == True: # skip parent link entries
             continue
         elem = {"name": entry.desc.identifier, "is_dir": entry.desc.characteristics.directory}
-        elem.update(GetUdfFileSize(fd, partition_start, entry.desc.icb.sector))
+        elem.update(GetUdfFileSize(fd, partition_start, entry.desc.icb.lba.sector))
         if entry.desc.characteristics.directory == True:
             if verbose:
                 print(f"entering directory {entry.desc.identifier}")
-            elem["content"] = ParseUdfDirectory(fd, partition_start, entry.desc.icb.sector, verbose)
+            elem["content"] = ParseUdfDirectory(fd, partition_start, entry.desc.icb.lba.sector, verbose)
         else:
             elem["content"] = []
             if verbose:
@@ -476,7 +476,7 @@ def ParseUdfDirectory(fd, partition_start, entry_sector, verbose):
 def ParseUdfPartition(fd, partition_start, fileset_sector, verbose):
     partition_start += 32 # quirk to skip strange file entry descriptors
     fileset = UdfDescriptorAtSector(partition_start + fileset_sector).parse_stream(fd)
-    return ParseUdfDirectory(fd, partition_start, fileset.desc.root_directory_ad.sector, verbose)
+    return ParseUdfDirectory(fd, partition_start, fileset.desc.root_directory_ad.lba.sector, verbose)
 
 def ParseUdf(fd, anchor_desc, verbose):
     fileset_sector = None
@@ -490,10 +490,10 @@ def ParseUdf(fd, anchor_desc, verbose):
             partition_start = desc.desc.partition_start
         if (desc.tag.identifier == "logical_volume_descriptor"):
             if verbose:
-                print(f"Fileset at sector {desc.desc.content.sector}")
+                print(f"Fileset at sector {desc.desc.content.lba.sector}")
             if (fileset_sector is not None):
                 raise Exception("More than one logical volume descriptor")
-            fileset_sector = desc.desc.content.sector
+            fileset_sector = desc.desc.content.lba.sector
     if (partition_start is None):
         raise Exception("No partition descriptor")
     if (fileset_sector is None):
